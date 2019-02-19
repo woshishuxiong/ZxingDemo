@@ -1,0 +1,8 @@
+
+android {
+    buildTypes {
+        debug {
+            buildConfigField "String", "TestString", "\"12345\""
+        }
+    }
+}
