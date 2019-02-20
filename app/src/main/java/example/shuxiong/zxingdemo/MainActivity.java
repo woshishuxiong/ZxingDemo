@@ -6,8 +6,8 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
-import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
@@ -18,19 +18,32 @@ import com.google.zxing.BarcodeFormat;
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.DecodeHintType;
 import com.google.zxing.MultiFormatReader;
-import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.RGBLuminanceSource;
-import com.google.zxing.Reader;
 import com.google.zxing.ReaderException;
 import com.google.zxing.Result;
 import com.google.zxing.common.HybridBinarizer;
-import com.google.zxing.qrcode.QRCodeReader;
 
+import org.opencv.android.OpenCVLoader;
+import org.opencv.android.Utils;
+import org.opencv.core.Mat;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.MatOfPoint2f;
+import org.opencv.core.Point;
+import org.opencv.core.Rect;
+import org.opencv.core.Scalar;
+import org.opencv.core.Size;
+import org.opencv.imgproc.Imgproc;
+
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.util.EnumMap;
+import java.util.ArrayList;
 import java.util.Hashtable;
-import java.util.Map;
+import java.util.List;
 import java.util.Vector;
+
+import static java.lang.Math.min;
+import static org.opencv.core.CvType.CV_8UC3;
 
 public class MainActivity extends Activity {
 
@@ -51,6 +64,7 @@ public class MainActivity extends Activity {
 
         Hashtable<DecodeHintType, Object> hints = new Hashtable<DecodeHintType, Object>(3);
         hints.put(DecodeHintType.POSSIBLE_FORMATS, decodeFormats);
+        hints.put(DecodeHintType.TRY_HARDER, true);
 //        hints.put(DecodeHintType.NEED_RESULT_POINT_CALLBACK, resultPointCallback);
         multiFormatReader = new MultiFormatReader();
         multiFormatReader.setHints(hints);
@@ -67,6 +81,10 @@ public class MainActivity extends Activity {
         });
 
         imageView = findViewById(R.id.imageView);
+
+        if (!OpenCVLoader.initDebug()) {
+            OpenCVLoader.initAsync(OpenCVLoader.OPENCV_VERSION_2_4_11, this, null);
+        }
     }
 
     @Override
@@ -82,7 +100,7 @@ public class MainActivity extends Activity {
 
                     Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
 
-                    imageView.setImageBitmap(bitmap);
+//                    displayBitmap(bitmap);
 
                     decode(bitmap);
 
@@ -98,23 +116,24 @@ public class MainActivity extends Activity {
         while (true) {
             int width = bitmap.getWidth();
             int height = bitmap.getHeight();
-            if (width < 100) {
+//            if (width < 100) {
+//                break;
+//            }
+            if (decodeBitmapUsingZXing(bitmap)) {
                 break;
             }
-            if (decodeQRCode(bitmap)) {
+            if (tryHarder(bitmap)) {
                 break;
-            } else {
-                byte[] data = getBitmapYUVBytes(bitmap);
-                if (decodeYUVByZxing(data, width, height)) {
-                    break;
-                }
             }
-            bitmap = scaleMatrixImage(bitmap, 0.5f, 0.5f);
+//            bitmap = scaleMatrixImage(bitmap, 0.5f, 0.5f);
+            break;
         }
 
     }
 
-    private boolean decodeQRCode(Bitmap bm) {
+    private boolean decodeBitmapUsingZXing(Bitmap bm) {
+        count ++;
+        saveBitmap(bm, "" + count);
         int width = bm.getWidth();
         int height = bm.getHeight();
         Log.i("[xxx]", "decode bitmap " + width + " " + height);
@@ -142,107 +161,186 @@ public class MainActivity extends Activity {
     }
 
     public Bitmap scaleMatrixImage(Bitmap oldbitmap, float scaleWidth, float scaleHeight) {
-    Matrix matrix = new Matrix();
-    matrix.postScale(scaleWidth,scaleHeight);// 放大缩小比例
-    Bitmap ScaleBitmap = Bitmap.createBitmap(oldbitmap, 0, 0, oldbitmap.getWidth(), oldbitmap.getHeight(), matrix, true);
-    return ScaleBitmap;
-}
-
-    public static byte[] getBitmapYUVBytes(Bitmap sourceBmp) {
-        if (null != sourceBmp) {
-            int inputWidth = sourceBmp.getWidth();
-            int inputHeight = sourceBmp.getHeight();
-            int[] argb = new int[inputWidth * inputHeight];
-            sourceBmp.getPixels(argb, 0, inputWidth, 0, 0, inputWidth, inputHeight);
-            byte[] yuv = new byte[inputWidth
-                    * inputHeight
-                    + ((inputWidth % 2 == 0 ? inputWidth : (inputWidth + 1)) * (inputHeight % 2 == 0 ? inputHeight
-                    : (inputHeight + 1))) / 2];
-            encodeYUV420SP(yuv, argb, inputWidth, inputHeight);
-//            sourceBmp.recycle();
-            return yuv;
-        }
-        return null;
+        Matrix matrix = new Matrix();
+        matrix.postScale(scaleWidth,scaleHeight);// 放大缩小比例
+        Bitmap ScaleBitmap = Bitmap.createBitmap(oldbitmap, 0, 0, oldbitmap.getWidth(), oldbitmap.getHeight(), matrix, true);
+        return ScaleBitmap;
     }
 
-    /**
-     * 将bitmap里得到的argb数据转成yuv420sp格式
-     * 这个yuv420sp数据就可以直接传给MediaCodec, 通过AvcEncoder间接进行编码
-     *
-     * @param yuv420sp 用来存放yuv429sp数据
-     * @param argb     传入argb数据
-     * @param width    bmpWidth
-     * @param height   bmpHeight
-     */
-    private static void encodeYUV420SP(byte[] yuv420sp, int[] argb, int width, int height) {
-        // 帧图片的像素大小
-        final int frameSize = width * height;
-        // Y的index从0开始
-        int yIndex = 0;
-        // UV的index从frameSize开始
-        int uvIndex = frameSize;
-        // YUV数据, ARGB数据
-        int Y, U, V, a, R, G, B;
-        ;
-        int argbIndex = 0;
-        // ---循环所有像素点，RGB转YUV---
-        for (int j = 0; j < height; j++) {
-            for (int i = 0; i < width; i++) {
 
-                // a is not used obviously
-                a = (argb[argbIndex] & 0xff000000) >> 24;
-                R = (argb[argbIndex] & 0xff0000) >> 16;
-                G = (argb[argbIndex] & 0xff00) >> 8;
-                B = (argb[argbIndex] & 0xff);
-                argbIndex++;
+    public boolean tryHarder(Bitmap srcBitmap) {
+        // scale
+//        int height = srcBitmap.getHeight();
+//        int width = srcBitmap.getWidth();
+//        float rate = 2000.f / (height < width ? height : width);
+//        srcBitmap = scaleMatrixImage(srcBitmap, rate, rate);
 
-                // well known RGB to YUV algorithm
-                Y = ((66 * R + 129 * G + 25 * B + 128) >> 8) + 16;
-                U = ((-38 * R - 74 * G + 112 * B + 128) >> 8) + 128;
-                V = ((112 * R - 94 * G - 18 * B + 128) >> 8) + 128;
+        Mat src = new Mat();
+        Mat gray = new Mat();
+        Utils.bitmapToMat(srcBitmap, src);
+        if (src.channels() == 3 || src.channels() == 4) {
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_BGR2GRAY);
+        }
 
-                Y = Math.max(0, Math.min(Y, 255));
-                U = Math.max(0, Math.min(U, 255));
-                V = Math.max(0, Math.min(V, 255));
+        // gaussianblur
+        Mat blur = new Mat();
+        if (src.width() > 500 && src.height() > 500) {
+            Imgproc.GaussianBlur(gray, blur, new Size(5, 5), Imgproc.BORDER_CONSTANT);
+        }
 
-                // NV21 has a plane of Y and interleaved planes of VU each
-                // sampled by a factor of 2
-                // meaning for every 4 Y pixels there are 1 V and 1 U. Note the
-                // sampling is every other
-                // pixel AND every other scanline.
-                // ---Y---
-                yuv420sp[yIndex++] = (byte) Y;
-                // ---UV---
-                if ((j % 2 == 0) && (i % 2 == 0)) {
-                    yuv420sp[uvIndex++] = (byte) V;
-                    yuv420sp[uvIndex++] = (byte) U;
+        Mat dst = new Mat();
+
+
+        for (int thres = 270; thres > 100; thres -= 50) {
+            int type = thres > 255 ? Imgproc.THRESH_OTSU : Imgproc.THRESH_BINARY;
+            Imgproc.threshold(blur, dst, thres, 255, type);
+
+            Bitmap dstBitmap = Bitmap.createBitmap(srcBitmap);
+            Utils.matToBitmap(dst, dstBitmap);
+            displayBitmap(dstBitmap);
+
+            Log.i("[xxx]", "threshold: " + thres);
+            if (decodeBitmapUsingZXing(dstBitmap)) {
+                return true;
+            }
+            if (findSqureAndDecode(blur, gray)) {
+                return true;
+            }
+            break;
+        }
+
+        if (true)
+            return false;
+
+        int delta = 27;
+        int blockSize = 11;
+        for (; delta >= 0; delta -=2) {
+            Imgproc.adaptiveThreshold(blur, dst, 255, Imgproc.ADAPTIVE_THRESH_MEAN_C, Imgproc.THRESH_BINARY, blockSize, delta);
+
+            Bitmap dstBitmap = Bitmap.createBitmap(srcBitmap);
+            Utils.matToBitmap(dst, dstBitmap);
+            displayBitmap(dstBitmap);
+
+            Log.i("[xxx]", "adaptive threshold: " + delta);
+            if (decodeBitmapUsingZXing(dstBitmap)) {
+                return true;
+            }
+            if (findSqureAndDecode(dst, gray)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void displayBitmap(Bitmap bitmap) {
+        imageView.setImageBitmap(bitmap);
+    }
+
+
+    private void displayBitmap(Mat src) {
+        Bitmap dstBitmap = Bitmap.createBitmap(src.width(), src.height(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(src, dstBitmap);
+        displayBitmap(dstBitmap);
+    }
+
+    int count = 0;
+    private boolean findSqureAndDecode(Mat src, Mat origin) {
+        Mat out = new Mat();
+        Imgproc.Canny(src, out, 50, 200);
+
+//        Imgproc.GaussianBlur(out, out, new Size(5, 5), Imgproc.BORDER_CONSTANT);
+
+        List<MatOfPoint> contours = new ArrayList<>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(out, contours, hierarchy, Imgproc.RETR_TREE, Imgproc.CHAIN_APPROX_NONE, new Point(0, 0));
+
+        Mat debug = Mat.zeros(out.size(), CV_8UC3);
+
+        for (int i = 0; i < contours.size(); i ++ ) {
+            if (!isSquare(contours.get(i))) {
+                continue;
+            }
+
+            Rect rect = Imgproc.boundingRect(contours.get(i));
+            Mat result = new Mat (origin, rect);
+
+            int minLine = min(result.rows(), result.cols() );
+            double scale = 256.f / minLine;
+            Size size = new Size(result.cols() * scale, result.rows() * scale);
+            Imgproc.resize(result, result, size);
+
+//            Imgproc.drawContours(debug, contours, i, new Scalar(255, 0, 0), 2);
+
+            Mat toCheck = result.clone();
+            for (int thres = -1; thres < 255; thres += 50) {
+                Bitmap dstBitmap = Bitmap.createBitmap(toCheck.width(), toCheck.height(), Bitmap.Config.ARGB_8888);
+                Utils.matToBitmap(toCheck, dstBitmap);
+                if (decodeBitmapUsingZXing(dstBitmap)) {
+                    displayBitmap(dstBitmap);
+                    return true;
+                }
+                else {
+                    int type = thres <= 0 ? Imgproc.THRESH_OTSU : Imgproc.THRESH_BINARY;
+                    Imgproc.threshold(result, toCheck, thres, 255, type);
                 }
             }
         }
+
+        return false;
     }
 
-    private static boolean decodeYUVByZxing(byte[] bmpYUVBytes, int bmpWidth, int bmpHeight) {
-        // Both dimensions must be greater than 0
-        Result result = null;
-        if (null != bmpYUVBytes && bmpWidth > 0 && bmpHeight > 0) {
-            try {
-                PlanarYUVLuminanceSource source = new PlanarYUVLuminanceSource(bmpYUVBytes, bmpWidth,
-                        bmpHeight, 0, 0, bmpWidth, bmpHeight, true);
-                BinaryBitmap binaryBitmap = new BinaryBitmap(new HybridBinarizer(source));
-                Reader reader = new QRCodeReader();
-                result = reader.decode(binaryBitmap);
-            } catch (Exception e) {
-                Log.w("[xxx]", "yuv decode error " + e);
-                e.printStackTrace();
+    boolean isSquare(MatOfPoint points) {
+        MatOfPoint2f curve = new MatOfPoint2f(points.toArray());
+        MatOfPoint2f approxCurve = new MatOfPoint2f();
+        Imgproc.approxPolyDP(curve, approxCurve, Imgproc.arcLength(new MatOfPoint2f(points.toArray()), true) * 0.25 * 0.3, true);
+        MatOfPoint approx = new MatOfPoint(approxCurve.toArray());
+        if (approxCurve.toArray().length == 4 && Imgproc.isContourConvex(approx)) {
+            double area = Math.abs(Imgproc.contourArea(approx));
+            if (area < 50 * 50) {
+                return false;
+            }
+            double maxCosine = 0.0;
+            for (int j = 2; j < 5; j ++) {
+                double cosine = Math.abs(angle(approx.toArray()[j%4], approx.toArray()[j-2], approx.toArray()[j-1]));
+                maxCosine = Math.max(maxCosine, cosine);
+            }
+
+            if (maxCosine < 0.1) {
+                return true;
             }
         }
-        if (result != null) {
-            Log.i("[xxx]", "yuv decode suc " + result.getText());
-        } else {
-            Log.i("[xxx]", "yuv decode fail");
-        }
-        return result != null;
+        return false;
     }
+
+    private double angle( Point pt1, Point pt2, Point pt0 ) {
+            double dx1 = pt1.x - pt0.x;
+            double dy1 = pt1.y - pt0.y;
+            double dx2 = pt2.x - pt0.x;
+            double dy2 = pt2.y - pt0.y;
+            return (dx1*dx2 + dy1*dy2)/Math.sqrt((dx1*dx1 + dy1*dy1)*(dx2*dx2 + dy2*dy2) + 1e-10);
+    }
+
+    private void saveBitmap(Bitmap bitmap, String name) {
+        File PHOTO_DIR = new File("/sdcard/000test");//设置保存路径
+        File avaterFile = new File(PHOTO_DIR, name + ".jpg");//设置文件名称
+        try {
+            avaterFile.createNewFile();
+            FileOutputStream fos = new FileOutputStream(avaterFile);
+             bitmap.compress(Bitmap.CompressFormat.JPEG, 100, fos);
+             fos.flush();
+             fos.close();
+        } catch (Exception e) {
+            Log.e("[xxx]", "" + e);
+        }
+    }
+
+    private void saveMatImage(Mat src, String name) {
+        Bitmap dstBitmap = Bitmap.createBitmap(src.width(), src.height(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(src, dstBitmap);
+        saveBitmap(dstBitmap, name);
+
+    }
+
 
 
 }
